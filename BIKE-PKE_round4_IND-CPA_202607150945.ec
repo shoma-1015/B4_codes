@@ -116,7 +116,7 @@ axiom uneven_w_half : !(2 %| d).
 axiom r_prime : prime r.
 (* Used in machine proofs from revision d: enumHw_nonempty (weight-d
    witness needs d <= r). True for all BIKE parameter sets (d << r). *)
-axiom d_le_r : d <= r.
+axiom d_lt_r : d < r.
 axiom t_ge0  : 0 <= t.
 axiom t_le_n : t <= n.
 
@@ -511,7 +511,7 @@ op enumHw : R list = filter Hw_elem enumR.
 lemma enumHw_nonempty : enumHw <> [].
 proof.
 have [x hx] : exists (x : R), ham_weight (polyToList x) = d.
-+ by apply weight_k_exists; smt(w_gt0 w_even d_le_r).
++ by apply weight_k_exists; smt(w_gt0 w_even d_lt_r).
 apply/negP => h.
 have hmem : x \in enumHw.
 + by rewrite /enumHw mem_filter /Hw_elem hx /= mem_enumR.
