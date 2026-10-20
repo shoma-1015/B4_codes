@@ -1,0 +1,213 @@
+(* ====================================================================
+   QCCodes -- quasi-cyclic codes over F2[X]/(X^r - 1): key distribution,
+              the qcsd witness predicate, and the OW-qcsd and qccf games
+
+   Part of a small EasyCrypt library for code-based cryptography.
+   Toolchain: EasyCrypt r2026.09, Alt-Ergo 2.6.0.
+
+   Follows BIKE Specification v5.2 (2024-10-10), Appendix C.1:
+     PKE0 key generation (Table 10)   | PKE0.keyGen
+     qcsd(e, h, s) (Problem 3)        | wit, wit_spec
+     OW-qcsd game (Table 11, middle)  | OW_QCSD
+     qccf distinguishing game         | QCCF
+
+   This abstract theory includes HammingWeight with n = r.
+
+   Axioms of the theory (all of them are clone parameters):
+     gt0_r, w_gt0, w_even, d_odd, d_lt_r, t_ge0, t_le_n
+                parameter conditions of the specification;
+     r_odd      r is odd (BIKE takes r to be an odd prime);
+     phi_irred  Phi = (X^r - 1)/(X - 1) = 1 + X + ... + X^(r-1) is
+                irreducible over F2. The specification chooses r so that
+                this holds (2 is a primitive root mod r).
+
+   From r_odd and phi_irred, wt_unit (every odd-weight element of weight
+   < r is a unit) is a lemma; see wt_unit_irred in HammingWeight.eca.
+   ==================================================================== *)
+
+require import AllCore IntDiv List Distr.
+require HammingWeight.
+
+(* -------------------------------------------------------------------- *)
+(* Parameters.                                                           *)
+op r : { int | 0 < r } as gt0_r.
+op w : int.
+op t : int.
+
+op d : int = w %/ 2.
+
+axiom w_gt0  : 0 < w.
+axiom w_even : 2 %| w.
+axiom d_odd  : !(2 %| d).
+axiom d_lt_r : d < r.
+axiom t_ge0  : 0 <= t.
+axiom t_le_n : t <= r + r.
+axiom r_odd  : !(2 %| r).
+
+clone include HammingWeight with
+  op n <- r
+proof gt0_n by exact gt0_r.
+
+(* -------------------------------------------------------------------- *)
+(* 1. INVERTIBILITY                                                      *)
+(* -------------------------------------------------------------------- *)
+(* Parameter condition of the specification: Phi is irreducible. *)
+axiom phi_irred : PD.irreduciblep phi.
+
+lemma wt_unit (x : Rn) : !(2 %| wt x) => wt x < r => ComRingDflInv.unit x.
+proof. by apply wt_unit_irred; [exact phi_irred | exact r_odd]. qed.
+
+lemma d_range : 0 <= d <= r.
+proof. smt(w_gt0 w_even d_lt_r). qed.
+
+lemma wt_d_unit (x : Rn) : wt x = d => ComRingDflInv.unit x.
+proof. by move=> hx; apply wt_unit; rewrite hx; smt(d_odd d_lt_r). qed.
+
+lemma wt_d_odd (x : Rn) : wt x = d => parity x = 1.
+proof. by move=> hx; rewrite /parity hx; smt(d_odd). qed.
+
+(* h0 * h0^-1 = 1 on the key-generation support. *)
+lemma invr_correct (x : Rn) : wt x = d => x * ComRingDflInv.invr x = oner.
+proof. by move=> hx; apply ComRingDflInv.mulrV; apply wt_d_unit. qed.
+
+lemma dWt_d_ll : is_lossless (dWt d).
+proof. by apply dWt_ll; exact d_range. qed.
+
+(* -------------------------------------------------------------------- *)
+(* 2. PKE0 KEY GENERATION (Table 10)                                     *)
+(*                                                                       *)
+(* (h0, h1) is sampled from Hw x Hw, where Hw is the set of elements of  *)
+(* weight d = w/2, and the public key is h = h1 * h0^-1. Only the public *)
+(* key is returned.                                                      *)
+(* -------------------------------------------------------------------- *)
+module PKE0 = {
+  proc keyGen() : Rn = {
+    var h0, h1;
+    h0 <$ dWt d;
+    h1 <$ dWt d;
+    return h1 * ComRingDflInv.invr h0;
+  }
+}.
+
+lemma keyGen_ll : islossless PKE0.keyGen.
+proof. by proc; auto => />; smt(dWt_ll d_range). qed.
+
+(* The public key is odd. *)
+lemma keyGen_odd : hoare[ PKE0.keyGen : true ==> parity res = 1 ].
+proof.
+proc; auto => /> h0 hh0 h1 hh1.
+have hw0 : wt h0 = d by rewrite -supp_dWt.
+have hw1 : wt h1 = d by rewrite -supp_dWt.
+rewrite parity_mul (wt_d_odd h1 hw1).
+by rewrite (parity_invr h0 (wt_d_unit h0 hw0) (wt_d_odd h0 hw0)).
+qed.
+
+lemma keyGen_supp_odd :
+  phoare[ PKE0.keyGen : true ==> parity res = 1 ] = 1%r.
+proof. by conseq keyGen_ll keyGen_odd. qed.
+
+lemma keyGen_eq : equiv[ PKE0.keyGen ~ PKE0.keyGen : true ==> ={res} ].
+proof. by proc; auto. qed.
+
+lemma keyGen_eq_odd :
+  equiv[ PKE0.keyGen ~ PKE0.keyGen : true ==> ={res} /\ parity res{2} = 1 ].
+proof. by conseq keyGen_eq _ keyGen_odd. qed.
+
+(* -------------------------------------------------------------------- *)
+(* 3. THE qcsd WITNESS PREDICATE (Problem 3)                             *)
+(* -------------------------------------------------------------------- *)
+
+(* wit e h s  <=>  e in E_t /\ e0 + e1 * h = s. *)
+op wit (e : Rn * Rn) (h s : Rn) : bool =
+  inEt t e /\ e.`1 + e.`2 * h = s.
+
+(* For a weight-t error pair and an odd h, the syndrome e0 + e1 * h lies
+   in the parity class t mod 2, which is the side condition "s in R_p(t)"
+   of Problem 3. *)
+lemma syndrome_parity (e : Rn * Rn) (h : Rn) :
+  inEt t e => parity h = 1 => parity (e.`1 + e.`2 * h) = t %% 2.
+proof.
+move=> hE hodd.
+rewrite parity_add parity_mul hodd /=.
+move: hE; rewrite /inEt /parity => hE.
+smt(modzDml modzDmr modz_mod).
+qed.
+
+(* Problem 3 including its domain checks h in R_odd and s in R_p(t). *)
+op wit_spec (e : Rn * Rn) (h s : Rn) : bool =
+  parity h = 1 /\ parity s = t %% 2 /\ wit e h s.
+
+(* Under an odd h the domain checks are redundant. *)
+lemma wit_spec_equiv (e : Rn * Rn) (h s : Rn) :
+  parity h = 1 => wit e h s <=> wit_spec e h s.
+proof.
+move=> hodd; rewrite /wit_spec hodd /=.
+split; last by smt().
+move=> hw; split; last exact hw.
+have <- : e.`1 + e.`2 * h = s by smt().
+by apply (syndrome_parity e h) => //; smt().
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* 4. THE OW-qcsd GAME (Table 11, middle)                                *)
+(* -------------------------------------------------------------------- *)
+module type QCSD_Solver = {
+  proc solve(h : Rn, s : Rn) : (Rn * Rn) option
+}.
+
+(* OW_QCSD is the game of the specification, with the domain checks of
+   Problem 3 (wit_spec). OW_QCSD0 checks wit only; the two games have the
+   same success probability (OW_QCSD0_eq). *)
+module OW_QCSD (A : QCSD_Solver) = {
+  proc main() : bool = {
+    var h, e, s, eo;
+    h <$ dRodd;
+    e <$ dEt t;
+    s <- e.`1 + e.`2 * h;
+    eo <@ A.solve(h, s);
+    return (eo <> None /\ wit_spec (oget eo) h s);
+  }
+}.
+
+module OW_QCSD0 (A : QCSD_Solver) = {
+  proc main() : bool = {
+    var h, e, s, eo;
+    h <$ dRodd;
+    e <$ dEt t;
+    s <- e.`1 + e.`2 * h;
+    eo <@ A.solve(h, s);
+    return (eo <> None /\ wit (oget eo) h s);
+  }
+}.
+
+lemma OW_QCSD0_eq (A <: QCSD_Solver) &m :
+  Pr[OW_QCSD0(A).main() @ &m : res] = Pr[OW_QCSD(A).main() @ &m : res].
+proof.
+byequiv (: ={glob A} ==> ={res}) => //.
+proc.
+seq 1 1 : (={glob A, h} /\ parity h{2} = 1).
++ by rnd; auto => />; smt(dRodd_odd).
+call (: true).
+auto => />.
+smt(wit_spec_equiv).
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* 5. THE qccf DISTINGUISHING GAME                                       *)
+(*                                                                       *)
+(* b = false: h is a real public key; b = true: h is uniform in R_odd.   *)
+(* -------------------------------------------------------------------- *)
+module type QCCF_Dist = {
+  proc distinguish(h : Rn) : bool
+}.
+
+module QCCF (D : QCCF_Dist) = {
+  proc main(b : bool) : bool = {
+    var hk, hu, h, b';
+    hk <@ PKE0.keyGen();
+    hu <$ dRodd;
+    h  <- if b then hu else hk;
+    b' <@ D.distinguish(h);
+    return b';
+  }
+}.
