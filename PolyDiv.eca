@@ -1,0 +1,448 @@
+(* ====================================================================
+   PolyDiv -- division, gcd and Bezout for polynomials over a field
+
+   Part of a small EasyCrypt library for code-based cryptography.
+   Toolchain: EasyCrypt r2026.09, Alt-Ergo 2.6.0.
+
+   This abstract theory works on the polynomials of the standard
+   Poly.PolyComRing, cloned here as BasePoly. To use the results on the
+   polynomials of an existing development (for instance the BasePoly
+   inside PolyReduce), substitute that theory at clone time:
+
+     clone PolyDiv as PD with
+       type coeff <- Zp.zmod,
+       theory Coeff <- Zp.ZModpRing,
+       theory BasePoly <- PR.PolyReduce.BasePoly
+     proof coeff_field by ...
+
+   Degree convention (that of Poly.ec): deg p is the number of
+   coefficients, so deg poly0 = 0, deg (polyC c) = 1 for c <> 0, and
+   deg X = 2.
+
+   The only axiom of the theory is the clone parameter coeff_field: every
+   nonzero coefficient is a unit.
+   ==================================================================== *)
+
+require import AllCore IntDiv List.
+require import Ring Poly.
+
+(* -------------------------------------------------------------------- *)
+(* Parameters: the coefficient ring, which must be a field.              *)
+type coeff.
+
+clone import Ring.ComRing as Coeff with type t <= coeff.
+
+clone export Poly.PolyComRing as BasePoly with
+  type coeff <- coeff,
+  theory Coeff <- Coeff.
+
+axiom coeff_field (c : coeff) : c <> zeror => Coeff.unit c.
+
+(* -------------------------------------------------------------------- *)
+(* 1. FIELD FACTS AND THE DEGREE OF A PRODUCT                            *)
+(* -------------------------------------------------------------------- *)
+lemma mulf_eq0 (a b : coeff) : a * b = zeror <=> a = zeror \/ b = zeror.
+proof.
+split; last by case=> ->; rewrite ?Coeff.mul0r ?Coeff.mulr0.
+case: (a = zeror) => //= nz_a ab0.
+have ua := coeff_field a nz_a.
+have := Coeff.mulKr a ua b; rewrite ab0 Coeff.mulr0 => <-.
+done.
+qed.
+
+lemma lreg_nz (c : coeff) : c <> zeror => Coeff.lreg c.
+proof. by move=> nz_c; apply Coeff.mulrI; apply coeff_field. qed.
+
+lemma lc_mul_nz (p q : poly) :
+  p <> poly0 => q <> poly0 => lc p * lc q <> zeror.
+proof. by move=> nz_p nz_q; rewrite mulf_eq0 !lc_eq0 nz_p nz_q. qed.
+
+lemma degM (p q : poly) :
+  p <> poly0 => q <> poly0 => deg (p * q) = deg p + deg q - 1.
+proof. by move=> nz_p nz_q; rewrite degM_proper 1:lc_mul_nz. qed.
+
+lemma lcM (p q : poly) :
+  p <> poly0 => q <> poly0 => lc (p * q) = lc p * lc q.
+proof. by move=> nz_p nz_q; rewrite lcM_proper 1:lc_mul_nz. qed.
+
+lemma mulp_eq0 (p q : poly) : p * q = poly0 <=> p = poly0 \/ q = poly0.
+proof.
+split; last by case=> ->; rewrite ?PolyComRing.mul0r ?PolyComRing.mulr0.
+case: (p = poly0) => //= nz_p; case: (q = poly0) => //= nz_q.
+by rewrite -deg_eq0 degM //; smt(deg_gt0).
+qed.
+
+(* Two polynomials of the same degree and leading coefficient: their
+   difference has a smaller degree. *)
+lemma deg_sub_lc (p r : poly) :
+  0 < deg p => deg r = deg p => lc r = lc p => deg (p - r) < deg p.
+proof.
+move=> gt0_p eq_deg eq_lc.
+have : deg (p - r) <= deg p - 1; last by smt().
+apply deg_leP; first smt().
+move=> i hi; rewrite polyDE polyNE.
+case: (i = deg p - 1) => [->|ne_i].
++ by rewrite -eq_lc -eq_deg Coeff.subrr.
+by rewrite !gedeg_coeff 1,2:/# Coeff.subrr.
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* 2. DIVISION WITH REMAINDER                                            *)
+(* -------------------------------------------------------------------- *)
+
+(* One step of long division: the monomial that cancels the leading
+   coefficient of p against q. *)
+op lead_quot (p q : poly) : poly =
+  (lc p * Coeff.invr (lc q)) ** exp X (deg p - deg q).
+
+lemma lead_quot_step (p q : poly) :
+  q <> poly0 => deg q <= deg p =>
+  deg (p - lead_quot p q * q) < deg p.
+proof.
+move=> nz_q le_qp.
+have nz_p : p <> poly0 by rewrite -deg_gt0; smt(deg_gt0).
+have ulq := coeff_field (lc q) _; first by rewrite lc_eq0.
+pose c := lc p * Coeff.invr (lc q).
+have nz_c : c <> zeror.
++ rewrite /c mulf_eq0 negb_or lc_eq0 nz_p /=.
+  by apply/negP => h; have := Coeff.unitrV (lc q); rewrite h ulq Coeff.unitr0.
+have hX : deg (exp X (deg p - deg q)) = deg p - deg q + 1.
++ by rewrite deg_polyXn; smt().
+have nz_X : exp X (deg p - deg q) <> poly0.
++ by rewrite -deg_gt0 hX; smt().
+have nz_t : lead_quot p q <> poly0.
++ rewrite /lead_quot -/c -deg_gt0 degZ_lreg 1:lreg_nz //.
+  by rewrite deg_gt0.
+apply deg_sub_lc; first by rewrite deg_gt0.
++ rewrite degM // /lead_quot -/c degZ_lreg 1:lreg_nz // hX; smt().
+have hlX : lc (exp X (deg p - deg q)) = oner by apply lc_polyXn; smt().
+rewrite lcM // /lead_quot -/c lcZ_lreg 1:lreg_nz // hlX.
+by rewrite Coeff.mulr1 /c -Coeff.mulrA Coeff.mulVr // Coeff.mulr1.
+qed.
+
+lemma edivp_exists (p q : poly) :
+  q <> poly0 => exists (s r : poly), p = s * q + r /\ deg r < deg q.
+proof.
+move=> nz_q.
+have : forall k, 0 <= k => forall p, deg p <= k =>
+         exists (s r : poly), p = s * q + r /\ deg r < deg q.
++ elim=> [|k ge0_k ih] p0 hp0.
+  * exists poly0 p0; rewrite PolyComRing.mul0r PolyComRing.add0r /=.
+    smt(ge0_deg deg_gt0).
+  case: (deg p0 < deg q) => [lt|].
+  * by exists poly0 p0; rewrite PolyComRing.mul0r PolyComRing.add0r.
+  move=> /lezNgt le_qp.
+  have lt1 := lead_quot_step p0 q nz_q le_qp.
+  have [s r [e1 hr]] := ih (p0 - lead_quot p0 q * q) _; first smt().
+  exists (s + lead_quot p0 q) r; split=> //.
+  rewrite PolyComRing.mulrDl -PolyComRing.addrA.
+  rewrite (PolyComRing.addrC (lead_quot p0 q * q) r) PolyComRing.addrA -e1.
+  by rewrite PolyComRing.subrK.
+by move=> h; apply (h (deg p)); rewrite ?ge0_deg.
+qed.
+
+op edivp (p q : poly) : poly * poly =
+  choiceb (fun (sr : poly * poly) => p = sr.`1 * q + sr.`2 /\ deg sr.`2 < deg q)
+          (poly0, p).
+
+op divp (p q : poly) : poly = (edivp p q).`1.
+op modp (p q : poly) : poly = (edivp p q).`2.
+
+lemma edivp_spec (p q : poly) :
+  q <> poly0 => p = divp p q * q + modp p q /\ deg (modp p q) < deg q.
+proof.
+move=> nz_q; rewrite /divp /modp /edivp.
+apply (choicebP (fun (sr : poly * poly) =>
+          p = sr.`1 * q + sr.`2 /\ deg sr.`2 < deg q) (poly0, p)).
+by have [s r h] := edivp_exists p q nz_q; exists (s, r).
+qed.
+
+lemma divp_eq (p q : poly) : q <> poly0 => p = divp p q * q + modp p q.
+proof. by move=> nz_q; have [] := edivp_spec p q nz_q. qed.
+
+lemma ltn_modp (p q : poly) : q <> poly0 => deg (modp p q) < deg q.
+proof. by move=> nz_q; have [] := edivp_spec p q nz_q. qed.
+
+lemma edivp_uniq (q s1 r1 s2 r2 : poly) :
+  deg r1 < deg q => deg r2 < deg q =>
+  s1 * q + r1 = s2 * q + r2 => s1 = s2 /\ r1 = r2.
+proof.
+move=> h1 h2 e.
+have nz_q : q <> poly0 by rewrite -deg_gt0; smt(ge0_deg).
+have e' : (s1 - s2) * q = r2 - r1.
++ rewrite PolyComRing.mulrBl.
+  have := congr1 (fun x => x - s2 * q - r1) _ _ e => /=.
+  smt(PolyComRing.addrA PolyComRing.addrC PolyComRing.addrN PolyComRing.addr0
+      PolyComRing.subrK PolyComRing.addrK).
+case: (s1 = s2) => [eq_s|ne_s].
++ by move: e; rewrite eq_s => /PolyComRing.addrI.
+have nz_s : s1 - s2 <> poly0 by rewrite PolyComRing.subr_eq0.
+have := degM (s1 - s2) q nz_s nz_q; rewrite e'.
+have := degB r2 r1.
+smt(deg_gt0).
+qed.
+
+lemma divp_modp_uniq (p q s r : poly) :
+  p = s * q + r => deg r < deg q => divp p q = s /\ modp p q = r.
+proof.
+move=> e hr.
+have nz_q : q <> poly0 by rewrite -deg_gt0; smt(ge0_deg).
+have [e0 h0] := edivp_spec p q nz_q.
+by apply (edivp_uniq q) => //; rewrite -e0 -e.
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* 3. DIVISIBILITY                                                       *)
+(* -------------------------------------------------------------------- *)
+op dvdp (d p : poly) : bool = exists s, p = s * d.
+
+lemma dvdpp (p : poly) : dvdp p p.
+proof. by exists poly1; rewrite PolyComRing.mul1r. qed.
+
+lemma dvdp0 (d : poly) : dvdp d poly0.
+proof. by exists poly0; rewrite PolyComRing.mul0r. qed.
+
+lemma dvd1p (p : poly) : dvdp poly1 p.
+proof. by exists p; rewrite PolyComRing.mulr1. qed.
+
+lemma dvdp_mull (d p s : poly) : dvdp d p => dvdp d (s * p).
+proof. by case=> u ->; exists (s * u); rewrite PolyComRing.mulrA. qed.
+
+lemma dvdp_mulr (d p s : poly) : dvdp d p => dvdp d (p * s).
+proof.
+by case=> u ->; exists (s * u); rewrite PolyComRing.mulrAC (PolyComRing.mulrC u s).
+qed.
+
+lemma dvdp_add (d p q : poly) : dvdp d p => dvdp d q => dvdp d (p + q).
+proof. by case=> u -> [v ->]; exists (u + v); rewrite PolyComRing.mulrDl. qed.
+
+lemma dvdp_sub (d p q : poly) : dvdp d p => dvdp d q => dvdp d (p - q).
+proof. by case=> u -> [v ->]; exists (u - v); rewrite PolyComRing.mulrBl. qed.
+
+lemma dvdp_trans (d e p : poly) : dvdp d e => dvdp e p => dvdp d p.
+proof. by case=> u -> [v ->]; exists (v * u); rewrite PolyComRing.mulrA. qed.
+
+lemma modpE (p q : poly) : q <> poly0 => modp p q = p - divp p q * q.
+proof.
+move=> nz_q; rewrite {2}(divp_eq p q nz_q).
+by rewrite PolyComRing.addrAC PolyComRing.addrN PolyComRing.add0r.
+qed.
+
+(* The common divisors of (p, q) and of (q, p mod q) are the same. *)
+lemma dvdp_modp (d p q : poly) :
+  q <> poly0 => dvdp d q => (dvdp d (modp p q) <=> dvdp d p).
+proof.
+move=> nz_q hq; split => h.
++ by rewrite (divp_eq p q nz_q); apply dvdp_add => //; apply dvdp_mull.
+by rewrite modpE //; apply dvdp_sub => //; apply dvdp_mull.
+qed.
+
+(* A nonzero multiple has degree at least that of the divisor. *)
+lemma dvdp_leq (d p : poly) : p <> poly0 => dvdp d p => deg d <= deg p.
+proof.
+move=> nz_p [s e]; subst p.
+have [nz_s nz_d] : s <> poly0 /\ d <> poly0 by smt(mulp_eq0).
+by rewrite degM //; smt(deg_gt0).
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* 4. EUCLID'S ALGORITHM, GCD AND BEZOUT                                 *)
+(* -------------------------------------------------------------------- *)
+
+(* One step of Euclid's algorithm; (a, poly0) is a fixed point. *)
+op euclid_step (ab : poly * poly) : poly * poly =
+  if ab.`2 = poly0 then ab else (ab.`2, modp ab.`1 ab.`2).
+
+(* deg q steps suffice: the degree of the second component decreases
+   strictly until it reaches poly0. *)
+op euclid (p q : poly) : poly * poly = iter (deg q) euclid_step (p, q).
+
+op gcdp (p q : poly) : poly = (euclid p q).`1.
+
+(* x is a combination of p and q. *)
+op comb (p q x : poly) : bool = exists (u v : poly), x = u * p + v * q.
+
+lemma comb_add (p q x y : poly) : comb p q x => comb p q y => comb p q (x + y).
+proof.
+case=> u1 v1 -> [u2 v2 ->]; exists (u1 + u2) (v1 + v2).
+by rewrite !PolyComRing.mulrDl PolyComRing.addrACA.
+qed.
+
+lemma comb_mull (p q x s : poly) : comb p q x => comb p q (s * x).
+proof.
+by case=> u v ->; exists (s * u) (s * v); rewrite PolyComRing.mulrDr !PolyComRing.mulrA.
+qed.
+
+lemma comb_sub (p q x y : poly) : comb p q x => comb p q y => comb p q (x - y).
+proof.
+move=> hx [u v ->]; apply comb_add => //.
+by exists (-u) (-v); rewrite PolyComRing.opprD !PolyComRing.mulNr.
+qed.
+
+(* The loop invariant after k steps. *)
+op euclid_inv (p q : poly) (k : int) (ab : poly * poly) : bool =
+     (forall d, (dvdp d ab.`1 /\ dvdp d ab.`2) <=> (dvdp d p /\ dvdp d q))
+  /\ comb p q ab.`1 /\ comb p q ab.`2
+  /\ (ab.`2 = poly0 \/ deg ab.`2 + k <= deg q).
+
+lemma euclid_step_inv (p q : poly) (k : int) (ab : poly * poly) :
+  euclid_inv p q k ab => euclid_inv p q (k + 1) (euclid_step ab).
+proof.
+case: ab => a b [hcd [ha [hb hdeg]]]; rewrite /euclid_step /=.
+case: (b = poly0) => [->> /=|nz_b /=].
++ by rewrite /euclid_inv /=; move: hcd ha hb.
+rewrite /euclid_inv /=.
+split.
++ move=> d; rewrite -hcd; split; case=> h1 h2; split => //.
+  * by move: h2; rewrite dvdp_modp.
+  * by rewrite dvdp_modp.
+split; first exact hb.
+split.
++ rewrite modpE //.
+  by apply (comb_sub p q a (divp a b * b)) => //; apply comb_mull.
+case: (modp a b = poly0) => [-> //|_]; right.
+by have := ltn_modp a b nz_b; smt().
+qed.
+
+lemma euclid_iter_inv (p q : poly) (k : int) :
+  0 <= k => euclid_inv p q k (iter k euclid_step (p, q)).
+proof.
+elim: k => [|k ge0_k ih].
++ rewrite iter0 // /euclid_inv /=.
+  split; first by exists poly1 poly0;
+    rewrite PolyComRing.mul1r PolyComRing.mul0r PolyComRing.addr0.
+  by exists poly0 poly1;
+    rewrite PolyComRing.mul0r PolyComRing.mul1r PolyComRing.add0r.
+by rewrite iterS //; apply euclid_step_inv.
+qed.
+
+lemma euclid_end (p q : poly) : (euclid p q).`2 = poly0.
+proof.
+have [_ [_ [_ h]]] := euclid_iter_inv p q (deg q) (ge0_deg q).
+by move: h; rewrite -/(euclid p q); smt(deg_gt0).
+qed.
+
+lemma dvdp_gcdp_cd (d p q : poly) :
+  dvdp d (gcdp p q) <=> (dvdp d p /\ dvdp d q).
+proof.
+have [hcd _] := euclid_iter_inv p q (deg q) (ge0_deg q).
+rewrite /gcdp -hcd -/(euclid p q) euclid_end.
+by have -> := dvdp0 d.
+qed.
+
+lemma gcdp_dvdl (p q : poly) : dvdp (gcdp p q) p.
+proof. by have /dvdp_gcdp_cd [] := dvdpp (gcdp p q). qed.
+
+lemma gcdp_dvdr (p q : poly) : dvdp (gcdp p q) q.
+proof. by have /dvdp_gcdp_cd [] := dvdpp (gcdp p q). qed.
+
+lemma dvdp_gcdp (d p q : poly) : dvdp d p => dvdp d q => dvdp d (gcdp p q).
+proof. by move=> hp hq; apply/dvdp_gcdp_cd. qed.
+
+lemma bezoutp (p q : poly) :
+  exists (u v : poly), u * p + v * q = gcdp p q.
+proof.
+have [_ [[u v h] _]] := euclid_iter_inv p q (deg q) (ge0_deg q).
+by exists u v; rewrite /gcdp /euclid h.
+qed.
+
+(* -------------------------------------------------------------------- *)
+(* 5. COPRIMALITY AND IRREDUCIBILITY                                     *)
+(* -------------------------------------------------------------------- *)
+
+(* p and q are coprime when their gcd is a nonzero constant. *)
+op coprimep (p q : poly) : bool = deg (gcdp p q) = 1.
+
+lemma dvdp0_eq (p : poly) : dvdp poly0 p => p = poly0.
+proof. by case=> s ->; rewrite PolyComRing.mulr0. qed.
+
+(* A divisor of a nonzero constant is a nonzero constant. *)
+lemma dvdp_deg1 (d g : poly) : deg g = 1 => dvdp d g => deg d = 1.
+proof.
+move=> hg hd.
+have nz_g : g <> poly0 by rewrite -deg_gt0 hg.
+have := dvdp_leq d g nz_g hd.
+have : d <> poly0 by apply/negP => ->>; move: nz_g; rewrite (dvdp0_eq g hd).
+by rewrite -deg_gt0; smt().
+qed.
+
+lemma coprimepP (p q : poly) :
+  coprimep p q <=> forall d, dvdp d p => dvdp d q => deg d = 1.
+proof.
+split => [hc d hp hq|h].
++ by apply (dvdp_deg1 d (gcdp p q)) => //; apply dvdp_gcdp.
+by apply h; [apply gcdp_dvdl | apply gcdp_dvdr].
+qed.
+
+(* Scaling a polynomial identity by the inverse of a nonzero constant. *)
+lemma bezout_scale (u v p q : poly) (c : coeff) :
+  c <> zeror => u * p + v * q = polyC c =>
+  (polyC (Coeff.invr c) * u) * p + (polyC (Coeff.invr c) * v) * q = poly1.
+proof.
+move=> nz_c e.
+rewrite -!PolyComRing.mulrA -PolyComRing.mulrDr e -polyCM.
+by rewrite Coeff.mulVr 1:coeff_field.
+qed.
+
+lemma coprimep_bezout (p q : poly) :
+  coprimep p q <=> exists (u v : poly), u * p + v * q = poly1.
+proof.
+split => [hc|[u v e]].
++ have [c [nz_c ec]] : exists c, c <> zeror /\ gcdp p q = polyC c.
+  * by apply/deg_eq1.
+  have [u v e] := bezoutp p q.
+  exists (polyC (Coeff.invr c) * u) (polyC (Coeff.invr c) * v).
+  by apply bezout_scale => //; rewrite e ec.
+apply/coprimepP => d hp hq.
+apply (dvdp_deg1 d poly1); first exact deg1.
+by rewrite -e; apply dvdp_add; apply dvdp_mull.
+qed.
+
+lemma coprimep_sym (p q : poly) : coprimep p q => coprimep q p.
+proof.
+rewrite !coprimep_bezout => -[u v e].
+by exists v u; rewrite PolyComRing.addrC.
+qed.
+
+(* If p is coprime to q and to r, then p is coprime to q * r. *)
+lemma coprime_mul (p q r : poly) :
+  coprimep p q => coprimep p r => coprimep p (q * r).
+proof.
+move=> /coprimep_bezout [u v e] hpr.
+apply/coprimepP => d hdp hdqr.
+have er : r = (u * r) * p + v * (q * r).
++ rewrite PolyComRing.mulrAC PolyComRing.mulrA -PolyComRing.mulrDl e.
+  by rewrite PolyComRing.mul1r.
+have hdr : dvdp d r.
++ by rewrite er; apply dvdp_add; apply dvdp_mull.
+by move/coprimepP: hpr; apply.
+qed.
+
+(* f is irreducible: f is not constant, and every divisor of f is either
+   a nonzero constant or of the same degree as f. *)
+op irreduciblep (f : poly) : bool =
+  1 < deg f /\ forall g, dvdp g f => deg g = 1 \/ deg g = deg f.
+
+(* A divisor of f of the same degree is an associate of f. *)
+lemma dvdp_eqdeg (d f : poly) :
+  f <> poly0 => dvdp d f => deg d = deg f => dvdp f d.
+proof.
+move=> nz_f [s ef] eq_deg.
+have [nz_s nz_d] : s <> poly0 /\ d <> poly0 by smt(mulp_eq0).
+have : deg s = 1 by have := degM s d nz_s nz_d; rewrite -ef; smt().
+move=> /deg_eq1 [c [nz_c ->>]].
+exists (polyC (Coeff.invr c)).
+rewrite ef PolyComRing.mulrA -polyCM Coeff.mulVr 1:coeff_field //.
+by rewrite PolyComRing.mul1r.
+qed.
+
+lemma irred_coprime (f p : poly) :
+  irreduciblep f => !dvdp f p => coprimep f p.
+proof.
+move=> [gt1_f hf] ndvd.
+have nz_f : f <> poly0 by rewrite -deg_gt0; smt().
+apply/coprimepP => d hdf hdp.
+case: (hf d hdf) => // eq_deg.
+have hfd := dvdp_eqdeg d f nz_f hdf eq_deg.
+by move: ndvd; rewrite (dvdp_trans f d p hfd hdp).
+qed.
